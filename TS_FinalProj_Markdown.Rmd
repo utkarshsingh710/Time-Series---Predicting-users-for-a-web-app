@@ -1,0 +1,459 @@
+---
+title: "**BANA 7050 Time series forecasting - Final project**"
+subtitle: "Forecasting hourly new users for a mobile app"
+author: "Utkarsh Singh (M13457333)"
+date: "03/12/2019"
+output:
+  pdf_document: default
+  latex_engine: xelatex
+  geometry: left = 0.05cm, right = 0.05cm, top = 0.1, bottom = 0.1
+---
+
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(message=FALSE, 
+tidy.opts=list(width.cutoff=80),fig.path='figure/graphics-',
+cache.path='cache/graphics-',fig.pos='!h') 
+```
+
+
+# **INTRODUCTION**
+
+Number of new users per hour is an important metric to measure customer engagement and acquisition for mobile apps. Amongst all other factors, current usage (which contributes to app popularity) and app performance can impact new user turnout in the future. This report analyses hourly recorded data on active users, total number of active sessions and app crashes.
+
+# **OBJECTIVE**
+
+Objective of this report is to analyse the impact of total users, total active sessions and number of crashes in the current hour on the number of new users in the next hour. A vector error correction model is used to generate forecasts for the next 48 hours.
+
+
+# **DATA**
+
+The data for this report has been downloaded from the following source -> <https://www.kaggle.com/wolfgangb33r/usercount> 
+
+The dataset contains four time series data of an hourly resolution for a period of 1 week. The following series are reported:
+
+  * **Users**: Total number of active users
+  * **Sessions**: Total number of active sessions
+  * **Crashes**: Total number of app crashes reported
+  * **New users**: Total number of new users
+
+
+# **FINDINGS**
+
+Analysis suggests that an increase in app crashes leads to a significant reduction in new users. The estimate for the "*crashes*" variable in the VEC model is found to be **-0.91**
+
+
+\pagebreak
+
+
+
+
+```{r, echo=FALSE, results="hide"}
+appdata <- read.csv("C:\\Users\\Hi\\Documents\\UC BANA Master\\1. Coursework\\6. TimeSeries and Forecasting\\Assignments and Projects\\Final project\\Model data\\Final data\\app.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+head(appdata,5)
+```
+
+# Part 1: Seasonal Adjustment
+
+This section identifies and adjusts for seasonality in the data. Since the data is recorded hourly, there is a high possibility that the app usage behavior is periodic in nature. First seasonality is studied for the target variable, and the measures to adjust seasonality are extended to other variables. 
+
+
+## Plot hourly new users data
+
+```{r, echo=FALSE,results="hide"}
+
+libraries <-c("tidyverse","forecast","tseries","urca") 
+lapply(libraries, require, character.only = TRUE)
+```
+
+```{r, fig.height=3, fig.width=8, fig.pos='!h',fig.align='center'}
+library(tseries)
+library(forecast)
+newusers <- appdata[,c("newusers")]
+newusers_ts <- ts(newusers,start=1,frequency = 24)
+plot.ts(newusers_ts)
+
+```
+
+```{r,echo=FALSE, fig.height=3.7, fig.width=3.7, fig.pos='!h',fig.align='default',fig.ncol=2, fig.show="hold"}
+
+acf(newusers_ts,lag.max = 100)
+pacf(newusers_ts, lag.max = 100)
+```
+
+The ACF plot shows periodic spikes in the data, which is indicative of seasonality. Data is tested for a unit root using ADF tests.
+
+## Test for stationarity and seasonality
+
+
+**ADF Test**
+```{r}
+library(tseries)
+library(forecast)
+
+(adftest <- adf.test(newusers_ts, k=24))
+```
+
+
+At a lag order of 24, the ADF test shows that a unit root exists and hence data is non-stationary.Data was further tested for stationarity assuming "trend", "lag" or "none".
+
+
+```{r, echo=TRUE, results="hide"}
+library(urca)
+
+summary(ur.df(newusers_ts,type="none"))
+summary(ur.df(newusers_ts,type="drift"))
+summary(ur.df(newusers_ts,type="trend"))
+```
+
+```{r table2, echo=FALSE, message=FALSE, warning=FALSE}
+library(pander)
+
+type <- c("none","drift","trend")
+test.stat <- c(-1.9078,-4.29,-4.26)
+CV_1pct <- c(-2.58,-3.46,-3.99)
+CV_5pct <- c(-1.95,-2.88,-3.43)
+CV_10pct <- c(-1.62,-2.57,-3.13)
+R_sq <- c(0.2087,0.273,0.267)
+tabledata <- data.frame(type, test.stat, CV_1pct,CV_5pct,CV_10pct,R_sq)
+pander(tabledata)           # Create the table
+```
+
+
+The results show that there is no significant trend or drift component in the data. But the null hypothesis of a unit root is not rejected at 5% $\alpha$ level. 
+
+The *tbats* function allows a seasonal component in the model and can be used to report if any significant seasonal component is detected.  
+
+```{r}
+fit <- tbats(newusers_ts)
+(seasonal <- !is.null(fit$seasonal))
+```
+
+
+The TBATS model confirms seasonality. Also, since the data is captured at an hourly level, there's a possibility of **multiple seasonalities**
+
+
+## Decompose and adjust for seasonality
+
+```{r, fig.height=6}
+newusers.decomp <- newusers %>% msts(seasonal.periods = c(12,24,48,72)) %>% mstl()
+autoplot(newusers.decomp)
+```
+
+
+Multiple seasonalities are observed in the data. These components are subtracted from the data to adjust for seasonality. A first order difference is also taken to check for stationarity.
+
+
+```{r, tidy=TRUE,tidy.opts=list(width.cutoff=60)}
+newusers.seasadj1 <- newusers.decomp[,"Data"] - (newusers.decomp[,"Seasonal12"] + newusers.decomp[,"Seasonal24"] + newusers.decomp[,"Seasonal48"] + newusers.decomp[,"Seasonal72"])
+
+newusers.seasadj2 <- newusers.seasadj1 %>% diff()
+
+summary(ur.df(newusers.seasadj1, type="none"))
+summary(ur.df(newusers.seasadj2, type="none"))
+
+```
+
+
+**The above test results show that the newusers data is not stationary after seasonal adjustment but is stationary after first-order differencing.** 
+
+
+```{r}
+fit <- tbats(newusers.seasadj1)
+(seasonal <- !is.null(fit$seasonal))
+```
+
+
+
+**The following observations are made for the series "newusers" so far:**
+
+  * The series is seasonally adjusted but non-stationary
+  * The series becomes stationary upon 1st order differencing. Therefore   "newusers" is I(1)
+
+
+
+
+**Similarly, the rest of the series in data were adjusted for seasonality**. The final plots of the time series present in data are shown below. Please note the series after seasonal adjustment are non-stationary. Stationarity is achieved on first-order differencing
+
+
+```{r,echo=FALSE,results="hide",include=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60)}
+
+users.decomp <- appdata[,c("users")] %>% msts(seasonal.periods = c(12,24,48,72)) %>% mstl()
+autoplot(users.decomp)
+
+users.seasadj1 <- users.decomp[,"Data"] - (users.decomp[,"Seasonal12"] + users.decomp[,"Seasonal24"] + users.decomp[,"Seasonal48"] + users.decomp[,"Seasonal72"] )
+
+users.seasadj2 <- users.seasadj1 %>% diff()
+```
+
+```{r,echo=FALSE, results = "hide", warning=FALSE}
+(adftest <- adf.test(users.seasadj1))
+(adftest <- adf.test(users.seasadj2))
+```
+
+```{r,echo=FALSE,results="hide",include=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60),fig.height=4, fig.width=3.7,fig.pos='!h', fig.cap="new users seasonally adjusted",fig.align='default',fig.ncol=2, fig.show="hold"}
+
+acf(users.seasadj2, lag.max = 170)
+pacf(users.seasadj2, lag.max = 170)
+
+```
+
+
+```{r,echo=FALSE,results="hide",include=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60)}
+
+sessions.decomp <- appdata[,c("sessions")] %>% msts(seasonal.periods = c(12,24,48,72)) %>% mstl()
+autoplot(sessions.decomp)
+
+sessions.seasadj1 <- sessions.decomp[,"Data"] - (sessions.decomp[,"Seasonal12"] + sessions.decomp[,"Seasonal24"] + sessions.decomp[,"Seasonal48"] + sessions.decomp[,"Seasonal72"] )
+
+sessions.seasadj2 <- sessions.seasadj1 %>% diff()
+```
+
+```{r,echo=FALSE,results = "hide", warning=FALSE}
+(adftest <- adf.test(sessions.seasadj1))
+(adftest <- adf.test(sessions.seasadj2))
+```
+
+```{r,echo=FALSE,results="hide",include=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60),fig.height=4, fig.width=3.7,fig.pos='!h', fig.cap="new users seasonally adjusted",fig.align='default',fig.ncol=2, fig.show="hold"}
+
+acf(sessions.seasadj2, lag.max = 170)
+pacf(sessions.seasadj2, lag.max = 170)
+
+```
+
+
+```{r,echo=FALSE,results="hide",include=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60)}
+
+crashes.decomp <- appdata[,c("crashes")] %>% msts(seasonal.periods = c(12,24,48,72)) %>% mstl()
+autoplot(crashes.decomp)
+
+crashes.seasadj1 <- crashes.decomp[,"Data"] - (crashes.decomp[,"Seasonal12"] + crashes.decomp[,"Seasonal24"] + crashes.decomp[,"Seasonal48"] + crashes.decomp[,"Seasonal72"] )
+
+crashes.seasadj2 <- crashes.seasadj1 %>% diff()
+```
+
+```{r,echo=FALSE,results="hide",warning=FALSE}
+(adftest <- adf.test(crashes.seasadj1))
+(adftest <- adf.test(crashes.seasadj2))
+```
+
+```{r,echo=FALSE,results="hide",include=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60),fig.height=4, fig.width=3.7,fig.pos='!h', fig.cap="new users seasonally adjusted",fig.align='default',fig.ncol=2, fig.show="hold"}
+
+acf(crashes.seasadj2, lag.max = 170)
+pacf(crashes.seasadj2, lag.max = 170)
+
+
+
+seasadj_appusers_data1 <- data.frame(users.seasadj1,sessions.seasadj1,newusers.seasadj1,crashes.seasadj1)
+
+
+seasadj_appusers_data2 <- data.frame(users.seasadj2,sessions.seasadj2,newusers.seasadj2,crashes.seasadj2)
+
+
+```
+
+```{r}
+ts_users <- ts(seasadj_appusers_data1$users.seasadj1, start = 1, frequency = 24)
+ts_sessions <- ts(seasadj_appusers_data1$sessions.seasadj1, start = 1, frequency = 24)
+ts_newusers <- ts(seasadj_appusers_data1$newusers.seasadj1, start = 1, frequency = 24)
+ts_crashes <- ts(seasadj_appusers_data1$crashes.seasadj1, start = 1, frequency = 24)
+```
+
+```{r,echo=FALSE, tidy=TRUE,tidy.opts=list(width.cutoff=60),fig.height=3.5, fig.width=3.5,fig.pos='!h', fig.cap="new users seasonally adjusted",fig.align='default',fig.nrow = 2, fig.ncol=4, fig.show="hold"}
+
+acf(ts_newusers, lag.max = 100)
+pacf(ts_newusers, lag.max = 100)
+acf(ts_users, lag.max = 100)
+pacf(ts_users, lag.max = 100)
+acf(ts_sessions, lag.max = 100)
+pacf(ts_sessions, lag.max = 100)
+acf(ts_crashes, lag.max = 100)
+pacf(ts_crashes, lag.max = 100)
+```
+
+
+**Notes**
+
+  * The multiple time series in the data are seasonally adjusted. Some residual seasonal component might still remain due to non-integral periods
+  * The time series achieve stationarity after first-order differencing, therefore all series are I(1)
+
+
+# Part 2: Cointegration
+
+
+Two series Z~t~ and Y~t~, each of integrated order (1), are said to be cointegrated if they have a same or common stochastic trend that can be eliminated by taking a specific difference of the series such that the resultant series is stationary. To perform conintegration tests on the data, the "**Phillips-Ouliaris**" test is conducted using the R function po.test.
+
+
+## Test for cointegration
+
+```{r}
+mat1 <- as.matrix(cbind(ts_newusers,ts_users,ts_sessions,ts_crashes), demean=FALSE)
+po.test(mat1)
+
+```
+
+**test shows cointegration exists between the series**
+
+
+```{r, warning=FALSE}
+library("dynlm")
+reg.dyn <- dynlm(ts_newusers~ ts_users + ts_sessions + ts_crashes)
+ehat <- resid(reg.dyn)
+(adf.test(ehat))
+summary(ur.df(ehat,type="none",lags = 1))
+
+checkresiduals(ehat)
+
+```
+
+In conclusion, the null hypothesis that the residuals have unit roots is rejected, and therefore the series are cointegrated.
+
+We have earlier seen that the series have an order of integration = 1. 
+
+With cointegrated series we can construct a VEC model to better understand the causal relationship between the two variables.
+
+
+
+```{r}
+summary(reg.dyn)
+```
+
+
+**Note:** 
+
+  * the negative sign in the coefficient of "crashes", which indicates the opposite relationship between the number of new users and the number of times the app has crashed in the previous hour
+  * The coefficient for "*users*" is not significant, hence it is removed from the model
+
+```{r, warning=FALSE}
+library("dynlm")
+reg.dyn_2 <- dynlm(ts_newusers~  ts_sessions + ts_crashes)
+ehat_2 <- resid(reg.dyn_2)
+
+checkresiduals(ehat_2)
+
+Box.test(resid(reg.dyn_2),type = "Ljung-Box")
+```
+
+
+**The residuals are a white noise process, hence the fitted model is adequate**
+
+
+
+```{r}
+vecmodel <- dynlm(d(ts_newusers)~L(ehat_2))
+
+summary(vecmodel)
+
+```
+
+
+
+The coefficient for the error correction term L(ehat_2) is significant, suggesting that changes in total number of sessions and crashes in an hour does affect the number of new users in the next hour.
+
+
+
+# Part 3: Forecasting using VEC model
+
+
+## Select number of lags using VARselect
+
+
+Number of lags to be used in the model is identified using the differenced 
+series (shown above as stationary).
+
+
+```{r}
+library(vars)
+dy = cbind(users.seasadj2,newusers.seasadj2,sessions.seasadj2,crashes.seasadj2)
+VARselect(dy,lag.max=12, type="const")
+```
+
+
+
+The BIC indicates 2 lags, but an extra lag is added as BIC tends to under-parametrize.
+
+
+```{r}
+y <- cbind(ts_newusers,ts_users,ts_sessions,ts_crashes)
+vecm1= ca.jo(y,ecdet="const",type="eigen",K=3,spec="longrun", season = 24)
+summary(vecm1)
+```
+
+
+
+The Johansen test confirms that 2 cointegrations exist (It has already been established that the series in our data are cointegrated). A linear combination of 2 time series is required to form a stationary series. 
+
+
+## Forecast
+
+```{r, fig.width=12, fig.height=20}
+library( vars)
+varf=vec2var(vecm1,r=2) # r=2 means USE 2 LR relationship test results 
+fcast= predict(varf,n.ahead=48,ci=0.95)
+fanchart(fcast, cis = 0.95, col.y = "blue")
+```
+
+
+
+
+
+
+
+
+
+
+
+<!-- # Part 2: VAR modeling -->
+
+<!-- ## Check stationarity of the time series -->
+
+<!-- After seasonal adjustment, 1st-order differencing was done for all variables to ensure stationarity before regression modeling. -->
+
+<!-- ```{r,warning=FALSE,echo=FALSE,tidy=TRUE,tidy.opts=list(width.cutoff=60),fig.width=3,fig.height=4,fig.pos='!h',fig.ncol=2,fig.nrow=2,fig.align='default', fig.show="hold"} -->
+<!-- plot.ts(users.seasadj2) -->
+<!-- plot.ts(sessions.seasadj2) -->
+<!-- plot.ts(newusers.seasadj2) -->
+<!-- plot.ts(crashes.seasadj2) -->
+<!-- adftest1 <- adf.test(users.seasadj2) -->
+<!-- adftest1$p.value -->
+<!-- adftest2 <- adf.test(sessions.seasadj2) -->
+<!-- adftest2$p.value -->
+<!-- adftest3 <- adf.test(newusers.seasadj2) -->
+<!-- adftest3$p.value -->
+<!-- adftest4 <- adf.test(crashes.seasadj2) -->
+<!-- adftest4$p.value -->
+<!-- ``` -->
+
+<!-- Though traces of seasonality are still leftover in the data (that accounts for the random spikes in ACF and PACF), the series are now reasonably stationary. -->
+
+<!-- As all variables in the data are interrelated, and can possibly have causality effects on one another, VAR is an appropriate modeling technique  -->
+
+<!-- ```{r} -->
+<!-- library(vars) -->
+<!-- y <- cbind(users.seasadj2,sessions.seasadj2,newusers.seasadj2,crashes.seasadj2) -->
+<!-- VARselect(y, lag.max=12, -->
+<!-- type="const")[["selection"]] -->
+
+<!-- ``` -->
+
+
+<!-- There is a large discrepancy between the VAR(12) selected by the AIC and the VAR(2) selected by the BIC. As a result we first fit a VAR(2), as selected by the BIC -->
+
+<!-- ```{r} -->
+<!-- var1 <- VAR(y, p=2, type="const") -->
+<!-- serial.test(var1, lags.pt=10, type="PT.asymptotic") -->
+<!-- ``` -->
+
+<!-- the residuals are not uncorrelated. Therefore we try with higher order lags -->
+
+<!-- ```{r} -->
+<!-- var10 <- VAR(y, p=10, type="const") -->
+<!-- serial.test(var10, lags.pt=10, type="PT.asymptotic") -->
+<!-- ``` -->
+
+
+
+
